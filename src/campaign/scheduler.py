@@ -7,34 +7,41 @@ Provides background processing and CLI cron tools to:
 """
 
 import argparse
-import base64
 import logging
-import sys
-from datetime import datetime, timezone
+import uuid
+from datetime import UTC, datetime
 from typing import Any
 
-import uuid
-from src.core.firestore_service import (
-    default_firestore_service,
-    AssetDocument,
-    LinkOperationDocument,
-    OperationType,
-    OperationStatus,
-    ScheduledJobDocument,
-    ScheduledJobStatus,
-)
-from src.core.gcs_service import default_gcs_service
-from src.core.auth_provider import default_auth_provider
 from src.campaign.kpi_eviction_service import KPIEvictionService, SwapRules
+from src.core.auth_provider import default_auth_provider
+from src.core.firestore_service import (
+    LinkOperationDocument,
+    OperationStatus,
+    OperationType,
+    ScheduledJobStatus,
+    default_firestore_service,
+)
 
 logger = logging.getLogger("adios.campaign.scheduler")
 
 
 def _clean_asset_group_error_message(err_str: str) -> str:
     """Formats raw Google Ads API validation errors into human-friendly explanations."""
-    if any(k in err_str for k in ["LIMIT_EXCEEDED", "MAX_ASSETS", "20 images", "TOO_MANY_ASSETS", "RESOURCE_EXHAUSTED", "ASSET_GROUP_ASSET_LIMIT"]):
+    if any(
+        k in err_str
+        for k in [
+            "LIMIT_EXCEEDED",
+            "MAX_ASSETS",
+            "20 images",
+            "TOO_MANY_ASSETS",
+            "RESOURCE_EXHAUSTED",
+            "ASSET_GROUP_ASSET_LIMIT",
+        ]
+    ):
         return "Reached maximum limit of 20 images for this Asset Group."
-    if any(k in err_str for k in ["not enough", "NOT_ENOUGH", "Headline asset", "Description headline"]):
+    if any(
+        k in err_str for k in ["not enough", "NOT_ENOUGH", "Headline asset", "Description headline"]
+    ):
         return (
             "The selected Asset Group does not meet Google Ads minimum asset composition requirements. "
             "Google Ads requires at least 3 Headlines, 1 Long Headline, 1 Description, and 1 Square Image "
@@ -58,15 +65,22 @@ def _extract_partial_failure_details(g_client: Any, status_err: Any) -> dict[int
                 op_idx = None
                 if hasattr(err, "location") and err.location.field_path_elements:
                     first_element = err.location.field_path_elements[0]
-                    if getattr(first_element, "field_name", "") == "operations" and hasattr(first_element, "index"):
+                    if getattr(first_element, "field_name", "") == "operations" and hasattr(
+                        first_element, "index"
+                    ):
                         op_idx = first_element.index
-                
+
                 if op_idx is not None and err.message:
                     error_code_str = ""
                     if hasattr(err, "error_code"):
                         from unittest.mock import MagicMock
+
                         if not isinstance(err.error_code, MagicMock):
-                            err_code_pb = err.error_code._pb if hasattr(err.error_code, "_pb") else err.error_code
+                            err_code_pb = (
+                                err.error_code._pb
+                                if hasattr(err.error_code, "_pb")
+                                else err.error_code
+                            )
                             if hasattr(err_code_pb, "WhichOneof"):
                                 oneof_type = err_code_pb.WhichOneof("error_code")
                                 if isinstance(oneof_type, str):
@@ -75,8 +89,10 @@ def _extract_partial_failure_details(g_client: Any, status_err: Any) -> dict[int
                                         error_code_str = f" [{enum_val.name}]"
                                     else:
                                         error_code_str = f" [{enum_val}]"
-                    
-                    op_errors[op_idx] = _clean_asset_group_error_message(err.message) + error_code_str
+
+                    op_errors[op_idx] = (
+                        _clean_asset_group_error_message(err.message) + error_code_str
+                    )
         except Exception:
             pass
     return op_errors
@@ -93,8 +109,11 @@ def _format_google_ads_error(err: Exception) -> str:
                     err_code_str = ""
                     if hasattr(e, "error_code"):
                         from unittest.mock import MagicMock
+
                         if not isinstance(e.error_code, MagicMock):
-                            e_code_pb = e.error_code._pb if hasattr(e.error_code, "_pb") else e.error_code
+                            e_code_pb = (
+                                e.error_code._pb if hasattr(e.error_code, "_pb") else e.error_code
+                            )
                             if hasattr(e_code_pb, "WhichOneof"):
                                 oneof_type = e_code_pb.WhichOneof("error_code")
                                 if isinstance(oneof_type, str):
@@ -104,7 +123,7 @@ def _format_google_ads_error(err: Exception) -> str:
                                     else:
                                         err_code_str = f" [{enum_val}]"
                     msg_parts.append(f"{msg}{err_code_str}")
-            
+
             if msg_parts:
                 return _clean_asset_group_error_message(" | ".join(msg_parts))
         except Exception:
@@ -112,13 +131,15 @@ def _format_google_ads_error(err: Exception) -> str:
     return _clean_asset_group_error_message(str(err))
 
 
-def create_asset_in_library(g_client: Any, customer_id: str, asset_name: str, image_bytes: bytes) -> str:
+def create_asset_in_library(
+    g_client: Any, customer_id: str, asset_name: str, image_bytes: bytes
+) -> str:
     """Uploads an image asset to the Google Ads Customer Asset Library."""
     asset_service = g_client.get_service("AssetService")
     asset_operation = g_client.get_type("AssetOperation")
     asset = asset_operation.create
 
-    asset.name = f"{asset_name}_{int(datetime.now(timezone.utc).timestamp())}"
+    asset.name = f"{asset_name}_{int(datetime.now(UTC).timestamp())}"
     asset.type_ = g_client.enums.AssetTypeEnum.IMAGE
     asset.image_asset.data = image_bytes
 
@@ -129,32 +150,34 @@ def create_asset_in_library(g_client: Any, customer_id: str, asset_name: str, im
     asset_resource_name = response.results[0].resource_name
     # Resource name is in format customers/{customer_id}/assets/{asset_id}
     asset_id = asset_resource_name.split("/")[-1]
-    logger.info(f"Created image asset in Google Ads library: {asset_resource_name} (ID: {asset_id})")
+    logger.info(
+        f"Created image asset in Google Ads library: {asset_resource_name} (ID: {asset_id})"
+    )
     return asset_id
 
 
 def link_asset_to_groups(
-    g_client: Any, 
-    customer_id: str, 
-    asset_id: str, 
-    asset_group_ids: list[str], 
+    g_client: Any,
+    customer_id: str,
+    asset_id: str,
+    asset_group_ids: list[str],
     field_type: str = "MARKETING_IMAGE",
-    swap_rules_dict: dict[str, Any] | None = None
+    swap_rules_dict: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Links an asset to target Asset Groups enforcing KPI eviction if capacity reached."""
     asset_group_asset_service = g_client.get_service("AssetGroupAssetService")
-    
+
     rules = SwapRules(**swap_rules_dict) if swap_rules_dict else None
     new_asset_resource_name = f"customers/{customer_id}/assets/{asset_id}"
-    
+
     batch_add_request = g_client.get_type("MutateAssetGroupAssetsRequest")
     batch_add_request.customer_id = customer_id
     batch_add_request.partial_failure = True
-    
+
     atomic_requests = []
     batch_add_metadata = []
     results = []
-    
+
     for ag_id in asset_group_ids:
         eviction_res = KPIEvictionService.get_operations_for_group(
             g_client=g_client,
@@ -162,36 +185,40 @@ def link_asset_to_groups(
             asset_group_id=ag_id,
             field_type=field_type,
             new_asset_resource_name=new_asset_resource_name,
-            rules=rules
+            rules=rules,
         )
-        
+
         if eviction_res["status"] == "FAILED":
-            results.append({
-                "asset_group_id": ag_id,
-                "status": "FAILED",
-                "asset_group_asset_resource_name": "",
-                "evicted_asset": None,
-                "error_message": eviction_res["error_message"]
-            })
+            results.append(
+                {
+                    "asset_group_id": ag_id,
+                    "status": "FAILED",
+                    "asset_group_asset_resource_name": "",
+                    "evicted_asset": None,
+                    "error_message": eviction_res["error_message"],
+                }
+            )
             continue
 
         ops = eviction_res["operations"]
         if not ops and eviction_res["status"] == "SUCCESS":
             # Already linked! Count as Success in scheduler so job becomes LINKED and unlinks later!
-            results.append({
-                "asset_group_id": ag_id,
-                "status": "SUCCESS",
-                "asset_group_asset_resource_name": f"customers/{customer_id}/assetGroupAssets/{ag_id}~{asset_id}~{field_type}",
-                "evicted_asset": None,
-                "error_message": "Asset is already linked to this Asset Group."
-            })
+            results.append(
+                {
+                    "asset_group_id": ag_id,
+                    "status": "SUCCESS",
+                    "asset_group_asset_resource_name": f"customers/{customer_id}/assetGroupAssets/{ag_id}~{asset_id}~{field_type}",
+                    "evicted_asset": None,
+                    "error_message": "Asset is already linked to this Asset Group.",
+                }
+            )
             continue
 
         evicted = eviction_res["evicted_asset"]
         op_types = [op_item["type"] for op_item in ops]
-        
+
         if "remove" in op_types and "add" in op_types:
-            # Atomic eviction: REMOVE and ADD for the same entity. 
+            # Atomic eviction: REMOVE and ADD for the same entity.
             # Must use a separate request with partial_failure=False to ensure atomicity
             # and avoid Request-Wide limit check exceptions in Google Ads API.
             req = g_client.get_type("MutateAssetGroupAssetsRequest")
@@ -204,11 +231,9 @@ def link_asset_to_groups(
             # Pure ADD operation(s). Add to the shared batch partial_failure request.
             for op_item in ops:
                 batch_add_request.operations.append(op_item["proto"])
-            batch_add_metadata.append({
-                "ag_id": ag_id,
-                "op_types": op_types,
-                "evicted_asset": evicted
-            })
+            batch_add_metadata.append(
+                {"ag_id": ag_id, "op_types": op_types, "evicted_asset": evicted}
+            )
 
     # Execute Atomic requests sequentially
     for ag_id, req, evicted, op_types in atomic_requests:
@@ -219,47 +244,55 @@ def link_asset_to_groups(
                 if op_type == "add" and getattr(r, "resource_name", ""):
                     add_rn = r.resource_name
             if add_rn:
-                results.append({
-                    "asset_group_id": ag_id,
-                    "status": "SUCCESS",
-                    "asset_group_asset_resource_name": add_rn,
-                    "evicted_asset": evicted,
-                    "error_message": None
-                })
+                results.append(
+                    {
+                        "asset_group_id": ag_id,
+                        "status": "SUCCESS",
+                        "asset_group_asset_resource_name": add_rn,
+                        "evicted_asset": evicted,
+                        "error_message": None,
+                    }
+                )
             else:
-                results.append({
+                results.append(
+                    {
+                        "asset_group_id": ag_id,
+                        "status": "FAILED",
+                        "asset_group_asset_resource_name": "",
+                        "error_message": "Atomic mutation failed: Resource name not returned for ADD operation.",
+                        "evicted_asset": evicted,
+                    }
+                )
+        except Exception as exc:
+            formatted_err = _format_google_ads_error(exc)
+            results.append(
+                {
                     "asset_group_id": ag_id,
                     "status": "FAILED",
                     "asset_group_asset_resource_name": "",
-                    "error_message": "Atomic mutation failed: Resource name not returned for ADD operation.",
-                    "evicted_asset": evicted
-                })
-        except Exception as exc:
-            formatted_err = _format_google_ads_error(exc)
-            results.append({
-                "asset_group_id": ag_id,
-                "status": "FAILED",
-                "asset_group_asset_resource_name": "",
-                "error_message": formatted_err,
-                "evicted_asset": evicted
-            })
+                    "error_message": formatted_err,
+                    "evicted_asset": evicted,
+                }
+            )
 
     # Execute Batch Add request
     if batch_add_request.operations:
         try:
-            aga_response = asset_group_asset_service.mutate_asset_group_assets(request=batch_add_request)
+            aga_response = asset_group_asset_service.mutate_asset_group_assets(
+                request=batch_add_request
+            )
             pf_err = getattr(aga_response, "partial_failure_error", None)
             op_errors = _extract_partial_failure_details(g_client, pf_err)
-            
+
             res_idx = 0
             for meta in batch_add_metadata:
                 ag_id = meta["ag_id"]
                 evicted = meta["evicted_asset"]
-                
+
                 group_success = True
                 add_rn = ""
                 group_errors = []
-                
+
                 for op_type in meta["op_types"]:
                     if res_idx in op_errors:
                         group_errors.append(op_errors[res_idx])
@@ -274,45 +307,61 @@ def link_asset_to_groups(
                                 add_rn = res_rn
                             else:
                                 group_success = False
-                
+
                 if group_success and add_rn:
-                    results.append({
-                        "asset_group_id": ag_id,
-                        "status": "SUCCESS",
-                        "asset_group_asset_resource_name": add_rn,
-                        "evicted_asset": evicted,
-                        "error_message": None
-                    })
+                    results.append(
+                        {
+                            "asset_group_id": ag_id,
+                            "status": "SUCCESS",
+                            "asset_group_asset_resource_name": add_rn,
+                            "evicted_asset": evicted,
+                            "error_message": None,
+                        }
+                    )
                 else:
-                    err_str = " | ".join(group_errors) if group_errors else "Google Ads mutation failed"
-                    results.append({
-                        "asset_group_id": ag_id,
-                        "status": "FAILED",
-                        "asset_group_asset_resource_name": "",
-                        "evicted_asset": evicted,
-                        "error_message": err_str
-                    })
+                    err_str = (
+                        " | ".join(group_errors) if group_errors else "Google Ads mutation failed"
+                    )
+                    results.append(
+                        {
+                            "asset_group_id": ag_id,
+                            "status": "FAILED",
+                            "asset_group_asset_resource_name": "",
+                            "evicted_asset": evicted,
+                            "error_message": err_str,
+                        }
+                    )
         except Exception as exc:
             formatted_err = _format_google_ads_error(exc)
             for meta in batch_add_metadata:
-                results.append({
-                    "asset_group_id": meta["ag_id"],
-                    "status": "FAILED",
-                    "asset_group_asset_resource_name": "",
-                    "evicted_asset": meta["evicted_asset"],
-                    "error_message": formatted_err
-                })
+                results.append(
+                    {
+                        "asset_group_id": meta["ag_id"],
+                        "status": "FAILED",
+                        "asset_group_asset_resource_name": "",
+                        "evicted_asset": meta["evicted_asset"],
+                        "error_message": formatted_err,
+                    }
+                )
 
     return {
         "results": results,
-        "partial_failure_error": None # Partial failures already mapped to results
+        "partial_failure_error": None,  # Partial failures already mapped to results
     }
 
 
 def unlink_asset_from_groups(
-    g_client: Any, customer_id: str, asset_id: str, asset_group_ids: list[str], field_type: str = "MARKETING_IMAGE"
-) -> list[str]:
-    """Unlinks (REMOVE operation) an asset from target Asset Groups."""
+    g_client: Any,
+    customer_id: str,
+    asset_id: str,
+    asset_group_ids: list[str],
+    field_type: str = "MARKETING_IMAGE",
+) -> dict[str, dict[str, Any]]:
+    """Unlinks (REMOVE operation) an asset from target Asset Groups.
+
+    Returns:
+        A dict mapping asset_group_id -> {"status": "SUCCESS" | "FAILED", "resource_name": str, "error_message": str | None}
+    """
     asset_group_asset_service = g_client.get_service("AssetGroupAssetService")
     operations = []
 
@@ -329,9 +378,38 @@ def unlink_asset_from_groups(
         req.operations.append(op_item)
 
     response = asset_group_asset_service.mutate_asset_group_assets(request=req)
-    unlinked_resources = [r.resource_name for r in response.results]
-    logger.info(f"Unlinked asset {asset_id} from {len(unlinked_resources)} asset groups for customer {customer_id}")
-    return unlinked_resources
+
+    pf_err = getattr(response, "partial_failure_error", None)
+    op_errors = _extract_partial_failure_details(g_client, pf_err)
+
+    results = {}
+    for idx, group_id in enumerate(asset_group_ids):
+        if idx in op_errors:
+            results[group_id] = {
+                "status": "FAILED",
+                "resource_name": "",
+                "error_message": op_errors[idx],
+            }
+        else:
+            res_rn = ""
+            if idx < len(response.results):
+                res_rn = getattr(response.results[idx], "resource_name", "")
+
+            if res_rn:
+                results[group_id] = {
+                    "status": "SUCCESS",
+                    "resource_name": res_rn,
+                    "error_message": None,
+                }
+            else:
+                results[group_id] = {
+                    "status": "FAILED",
+                    "resource_name": "",
+                    "error_message": "Google Ads unlinking failed (no resource name returned)",
+                }
+
+    logger.info(f"Unlinked asset {asset_id} result summary: {results}")
+    return results
 
 
 def process_scheduled_jobs(
@@ -341,7 +419,7 @@ def process_scheduled_jobs(
 ) -> dict[str, Any]:
     """Evaluates and processes all pending start and expired end date jobs."""
     if not as_of_date:
-        as_of_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        as_of_date = datetime.now(UTC).strftime("%Y-%m-%d")
 
     summary = {
         "as_of_date": as_of_date,
@@ -367,30 +445,35 @@ def process_scheduled_jobs(
             if rt:
                 job_client = default_auth_provider.get_google_ads_client(refresh_token_override=rt)
             else:
-                job_client = default_auth_provider.get_google_ads_client(user_access_token=user_access_token)
+                job_client = default_auth_provider.get_google_ads_client(
+                    user_access_token=user_access_token
+                )
 
             if job_client and job.asset_id:
+                unlink_results = {}
                 try:
-                    unlinked_resources = unlink_asset_from_groups(job_client, job.customer_id, job.asset_id, job.asset_group_ids, field_type=job.field_type)
-                    
-                    # Save UNLINK Operations as SUCCESS
-                    for ag_id in job.asset_group_ids:
-                        op_id = str(uuid.uuid4())
-                        op = LinkOperationDocument(
-                            operation_id=op_id,
-                            operation_type=OperationType.UNLINK,
-                            customer_id=job.customer_id,
-                            asset_group_id=ag_id,
-                            google_ads_asset_id=job.asset_id,
-                            status=OperationStatus.SUCCESS,
-                        )
-                        default_firestore_service.save_link_operation(op)
+                    unlink_results = unlink_asset_from_groups(
+                        job_client,
+                        job.customer_id,
+                        job.asset_id,
+                        job.asset_group_ids,
+                        field_type=job.field_type,
+                    )
                 except Exception as api_exc:
-                    err_str = str(api_exc)
-                    if "MUTATE_ERROR_ENTITY_DOES_NOT_EXIST" in err_str or "RESOURCE_NOT_FOUND" in err_str:
-                        logger.warning(f"Asset {job.asset_id} was already unlinked from groups for job {job.job_id}.")
+                    err_str = _format_google_ads_error(api_exc)
+                    if (
+                        "MUTATE_ERROR_ENTITY_DOES_NOT_EXIST" in err_str
+                        or "RESOURCE_NOT_FOUND" in err_str
+                    ):
+                        logger.warning(
+                            f"Asset {job.asset_id} was already unlinked or does not exist for job {job.job_id}."
+                        )
+                        # Fallback: treat as successful unlinks
+                        unlink_results = {
+                            ag_id: {"status": "SUCCESS", "resource_name": "", "error_message": None}
+                            for ag_id in job.asset_group_ids
+                        }
                     else:
-                        # Save UNLINK Operations as FAILED
                         for ag_id in job.asset_group_ids:
                             op_id = str(uuid.uuid4())
                             op = LinkOperationDocument(
@@ -405,21 +488,58 @@ def process_scheduled_jobs(
                             default_firestore_service.save_link_operation(op)
                         raise api_exc
 
-                # Restore Logic (Re-linking original evicted assets)
+                successful_unlinks = []
+                failed_unlinks = {}
+                for ag_id, res_val in unlink_results.items():
+                    if res_val["status"] == "SUCCESS":
+                        successful_unlinks.append(ag_id)
+                        op_id = str(uuid.uuid4())
+                        op = LinkOperationDocument(
+                            operation_id=op_id,
+                            operation_type=OperationType.UNLINK,
+                            customer_id=job.customer_id,
+                            asset_group_id=ag_id,
+                            google_ads_asset_id=job.asset_id,
+                            status=OperationStatus.SUCCESS,
+                        )
+                        default_firestore_service.save_link_operation(op)
+                    else:
+                        failed_unlinks[ag_id] = res_val["error_message"]
+                        op_id = str(uuid.uuid4())
+                        op = LinkOperationDocument(
+                            operation_id=op_id,
+                            operation_type=OperationType.UNLINK,
+                            customer_id=job.customer_id,
+                            asset_group_id=ag_id,
+                            google_ads_asset_id=job.asset_id,
+                            status=OperationStatus.FAILED,
+                            error_message=res_val["error_message"],
+                        )
+                        default_firestore_service.save_link_operation(op)
+
+                # Restore Logic (Re-linking original evicted assets ONLY for successful unlinks)
                 evicted_asset_ids = getattr(job, "evicted_asset_ids", {})
-                if evicted_asset_ids:
+                restore_failed = False
+                restore_errors = []
+                if evicted_asset_ids and successful_unlinks:
                     asset_group_asset_service = job_client.get_service("AssetGroupAssetService")
                     restore_ops = []
                     restore_metadata = []
                     for ag_id, original_asset_id in evicted_asset_ids.items():
-                        if ag_id in job.asset_group_ids:
+                        if ag_id in successful_unlinks:
                             op_add = job_client.get_type("AssetGroupAssetOperation")
                             aga_add = op_add.create
                             aga_add.asset_group = f"customers/{job.customer_id}/assetGroups/{ag_id}"
-                            aga_add.asset = f"customers/{job.customer_id}/assets/{original_asset_id}"
-                            aga_add.field_type = getattr(job_client.enums.AssetFieldTypeEnum, job.field_type)
+                            aga_add.asset = (
+                                f"customers/{job.customer_id}/assets/{original_asset_id}"
+                            )
+                            aga_add.field_type = getattr(
+                                job_client.enums.AssetFieldTypeEnum, job.field_type
+                            )
                             restore_ops.append(op_add)
-                            restore_metadata.append({"ag_id": ag_id, "original_asset_id": original_asset_id})
+                            restore_metadata.append(
+                                {"ag_id": ag_id, "original_asset_id": original_asset_id}
+                            )
 
                     if restore_ops:
                         try:
@@ -430,31 +550,52 @@ def process_scheduled_jobs(
                                 req.operations.append(op_item)
 
                             res = asset_group_asset_service.mutate_asset_group_assets(request=req)
-                            for meta, r in zip(restore_metadata, res.results):
-                                add_rn = getattr(r, "resource_name", "")
+                            restore_pf_err = getattr(res, "partial_failure_error", None)
+                            restore_op_errors = _extract_partial_failure_details(
+                                job_client, restore_pf_err
+                            )
+
+                            for idx, (meta, r) in enumerate(zip(restore_metadata, res.results)):
+                                ag_id = meta["ag_id"]
+                                add_rn = (
+                                    getattr(r, "resource_name", "")
+                                    if idx not in restore_op_errors
+                                    else ""
+                                )
+
                                 if add_rn:
                                     op_res = LinkOperationDocument(
                                         operation_id=str(uuid.uuid4()),
                                         operation_type=OperationType.LINK,
                                         customer_id=job.customer_id,
-                                        asset_group_id=meta["ag_id"],
+                                        asset_group_id=ag_id,
                                         google_ads_asset_id=meta["original_asset_id"],
                                         google_ads_asset_group_asset_id=add_rn.split("/")[-1],
                                         status=OperationStatus.SUCCESS,
                                     )
                                 else:
+                                    err_msg = restore_op_errors.get(
+                                        idx,
+                                        "Failed to restore original asset during schedule rollback",
+                                    )
+                                    restore_errors.append(f"Group {ag_id}: {err_msg}")
+                                    restore_failed = True
                                     op_res = LinkOperationDocument(
                                         operation_id=str(uuid.uuid4()),
                                         operation_type=OperationType.LINK,
                                         customer_id=job.customer_id,
-                                        asset_group_id=meta["ag_id"],
+                                        asset_group_id=ag_id,
                                         google_ads_asset_id=meta["original_asset_id"],
                                         status=OperationStatus.FAILED,
-                                        error_message="Failed to restore original asset during schedule rollback",
+                                        error_message=err_msg,
                                     )
                                 default_firestore_service.save_link_operation(op_res)
                         except Exception as rest_exc:
-                            logger.error(f"Failed during restore batch for job {job.job_id}: {rest_exc}")
+                            logger.error(
+                                f"Failed during restore batch for job {job.job_id}: {rest_exc}"
+                            )
+                            restore_errors.append(str(rest_exc))
+                            restore_failed = True
                             for meta in restore_metadata:
                                 op_res = LinkOperationDocument(
                                     operation_id=str(uuid.uuid4()),
@@ -466,16 +607,59 @@ def process_scheduled_jobs(
                                     error_message=str(rest_exc),
                                 )
                                 default_firestore_service.save_link_operation(op_res)
-                            raise rest_exc
 
-            default_firestore_service.update_scheduled_job(job.customer_id, job.job_id, {"status": ScheduledJobStatus.COMPLETED_UNLINKED})
-            summary["unlinked_jobs"] += 1
-            summary["details"].append({"job_id": job.job_id, "action": "UNLINK_AND_RESTORE", "status": "SUCCESS"})
+                if failed_unlinks or restore_failed:
+                    err_parts = []
+                    if failed_unlinks:
+                        err_parts.append(
+                            "Unlink failures: "
+                            + ", ".join(
+                                [f"Group {g_id}: {err}" for g_id, err in failed_unlinks.items()]
+                            )
+                        )
+                    if restore_errors:
+                        err_parts.append("Restore failures: " + ", ".join(restore_errors))
+
+                    combined_err = " | ".join(err_parts)
+                    default_firestore_service.update_scheduled_job(
+                        job.customer_id, job.job_id, {"error_message": combined_err}
+                    )
+                    summary["failed_jobs"] += 1
+                    summary["details"].append(
+                        {
+                            "job_id": job.job_id,
+                            "action": "UNLINK_AND_RESTORE",
+                            "status": "FAILED",
+                            "error": combined_err,
+                        }
+                    )
+                else:
+                    default_firestore_service.update_scheduled_job(
+                        job.customer_id,
+                        job.job_id,
+                        {"status": ScheduledJobStatus.COMPLETED_UNLINKED},
+                    )
+                    summary["unlinked_jobs"] += 1
+                    summary["details"].append(
+                        {"job_id": job.job_id, "action": "UNLINK_AND_RESTORE", "status": "SUCCESS"}
+                    )
         except Exception as exc:
-            logger.error(f"Failed to process end schedule unlinking for job {job.job_id}: {exc}", exc_info=True)
-            default_firestore_service.update_scheduled_job(job.customer_id, job.job_id, {"error_message": str(exc)})
+            logger.error(
+                f"Failed to process end schedule unlinking for job {job.job_id}: {exc}",
+                exc_info=True,
+            )
+            default_firestore_service.update_scheduled_job(
+                job.customer_id, job.job_id, {"error_message": str(exc)}
+            )
             summary["failed_jobs"] += 1
-            summary["details"].append({"job_id": job.job_id, "action": "UNLINK_AND_RESTORE", "status": "FAILED", "error": str(exc)})
+            summary["details"].append(
+                {
+                    "job_id": job.job_id,
+                    "action": "UNLINK_AND_RESTORE",
+                    "status": "FAILED",
+                    "error": str(exc),
+                }
+            )
 
     return summary
 
@@ -483,10 +667,14 @@ def process_scheduled_jobs(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Adios 2.0 Cron Scheduler for Asset Lifecycles")
     parser.add_argument("--date", type=str, help="Override as-of date (YYYY-MM-DD)", default=None)
-    parser.add_argument("--dry-run", action="store_true", help="Simulate schedule execution without API mutations")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Simulate schedule execution without API mutations"
+    )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    )
     result = process_scheduled_jobs(as_of_date=args.date, dry_run=args.dry_run)
     print(f"Schedule processing complete: {result}")
 

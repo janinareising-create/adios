@@ -229,6 +229,7 @@ REQUIRED_APIS=(
   "firestore.googleapis.com"
   "storage.googleapis.com"
   "cloudresourcemanager.googleapis.com"
+  "iap.googleapis.com"
 )
 
 ENABLED_APIS=$(gcloud services list --enabled --project="${GCP_PROJECT}" --format="value(config.name)" 2>/dev/null || true)
